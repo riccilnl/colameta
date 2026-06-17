@@ -1,9 +1,9 @@
 ```
-   ______      __                      __
-  / ____/___  / /___ _____ ___  ____ _/ /____
+   ______      __                      __     
+  / ____/___  / /___ _____ ___  ____ _/ /____ 
  / /   / __ \/ / __ `/ __ `__ \/ __ `/ __/ _ \
 / /___/ /_/ / / /_/ / / / / / / /_/ / /_/  __/
-\____/\____/_/\__,_/_/ / /_/ /_/\__,_/\__/\___/
+\____/\____/_/\__,_/_/ /_/ /_/\__,_/\__/\___/ 
 
 🥤 enjoy your vibe coding with GPTs! ✨
 ```
@@ -17,7 +17,7 @@ ColaMeta 是连接 ChatGPT / GPTs 和本地执行器的 AI coding workflow harne
 ## 安装
 
 ```bash
-pip install colameta
+pip3 install colameta
 ```
 
 安装后直接使用 `colameta` 命令：
@@ -25,6 +25,14 @@ pip install colameta
 ```bash
 colameta /path/to/your/project --public-base-url https://your-domain.com
 colameta serve /path/to/your/project --auth-mode none --open
+```
+
+如果系统没有 `pip3` 命令，用 venv 隔离安装：
+
+```bash
+python3 -m venv path/to/venv
+source path/to/venv/bin/activate
+pip3 install colameta
 ```
 
 ## 快速开始
