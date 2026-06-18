@@ -2808,6 +2808,165 @@ def _run_decision_delete(args: list[str]) -> int:
     return _print_json_result(manager.delete(args[2]))
 
 
+def _run_cloud(args: list[str]) -> int:
+    if not args:
+        print("colameta cloud 需要子命令：pair、status、reset 或 agent。", file=sys.stderr)
+        print("用法：colameta cloud pair --relay-url <url> --pair-code <code>", file=sys.stderr)
+        print("      colameta cloud status", file=sys.stderr)
+        print("      colameta cloud reset", file=sys.stderr)
+        print("      colameta cloud agent [--project-path <path>] [--dry-run]", file=sys.stderr)
+        return 1
+    subcmd = args[0]
+    if subcmd == "pair":
+        return _run_cloud_pair(args[1:])
+    if subcmd == "status":
+        return _run_cloud_status(args[1:])
+    if subcmd == "reset":
+        return _run_cloud_reset(args[1:])
+    if subcmd == "agent":
+        return _run_cloud_agent(args[1:])
+    print(f"未知 cloud 子命令：{subcmd}", file=sys.stderr)
+    return 1
+
+
+def _run_cloud_pair(args: list[str]) -> int:
+    relay_url = None
+    pair_code = None
+    i = 0
+    while i < len(args):
+        if args[i] == "--relay-url" and i + 1 < len(args):
+            relay_url = args[i + 1]
+            i += 2
+        elif args[i] == "--pair-code" and i + 1 < len(args):
+            pair_code = args[i + 1]
+            i += 2
+        else:
+            print(f"未知参数：{args[i]}", file=sys.stderr)
+            return 1
+    if not relay_url or not pair_code:
+        print("colameta cloud pair 需要 --relay-url 和 --pair-code。", file=sys.stderr)
+        return 1
+    from runner.cloud_pairing import CloudAgentCredential, save_credential
+    from datetime import datetime, timezone
+    import uuid
+    credential = CloudAgentCredential(
+        device_id=str(uuid.uuid4()),
+        relay_url=relay_url,
+        agent_token=pair_code,
+        scopes=["mcp:read", "mcp:preview"],
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    result = save_credential(credential)
+    if result.get("ok"):
+        print(json.dumps({"ok": True, "message": "cloud agent credential 已保存。"}, ensure_ascii=False, indent=2))
+        return 0
+    print(json.dumps(result, ensure_ascii=False, indent=2), file=sys.stderr)
+    return 1
+
+
+def _run_cloud_status(args: list[str]) -> int:
+    from runner.cloud_pairing import load_credential
+    cred_result = load_credential()
+    if not cred_result.get("ok"):
+        print(cred_result.get("message", "未找到 credential"), file=sys.stderr)
+        return 1
+    credential = cred_result["credential"]
+    masked = credential.mask_sensitive()
+    print(json.dumps({
+        "ok": True,
+        "device_id": credential.device_id,
+        "relay_url": credential.relay_url,
+        "scopes": credential.scopes,
+        "created_at": credential.created_at,
+        "agent_token_masked": masked.get("agent_token", "***"),
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _run_cloud_reset(args: list[str]) -> int:
+    from runner.cloud_pairing import delete_credential
+    result = delete_credential()
+    if result.get("ok"):
+        print(json.dumps({"ok": True, "message": "cloud agent credential 已删除。"}, ensure_ascii=False, indent=2))
+        return 0
+    print(json.dumps(result, ensure_ascii=False, indent=2), file=sys.stderr)
+    return 1
+
+
+def _run_cloud_agent(args: list[str]) -> int:
+    from runner.cloud_pairing import load_credential
+    from runner.cloud_agent_client import CloudRelayToolBridge, MockRelayTransport
+
+    dry_run = False
+    project_path = None
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if token == "--dry-run":
+            dry_run = True
+            i += 1
+        elif token == "--project-path" and i + 1 < len(args):
+            project_path = _resolve_path(args[i + 1])
+            i += 2
+        elif not token.startswith("-"):
+            project_path = _resolve_path(token)
+            i += 1
+        else:
+            print(f"cloud agent 参数错误：未知参数 {token}", file=sys.stderr)
+            return 1
+
+    if project_path is None:
+        print("cloud agent 需要 --project-path <path> 或直接传入项目路径。", file=sys.stderr)
+        return 1
+    if not os.path.isdir(project_path):
+        print(f"项目目录不存在：{project_path}", file=sys.stderr)
+        return 1
+
+    cred_result = load_credential()
+    if not cred_result.get("ok"):
+        print(cred_result.get("message", "未找到 credential"), file=sys.stderr)
+        return 1
+
+    credential = cred_result["credential"]
+    masked = credential.mask_sensitive()
+
+    bridge = CloudRelayToolBridge(project_path, service_mode=True)
+
+    if dry_run:
+        transport = MockRelayTransport()
+        transport.enqueue({
+            "request_id": "dry-run-001",
+            "tool_name": "list_registered_projects",
+            "arguments": {},
+            "scopes": ["mcp:read"],
+        })
+        count = bridge.process_messages(transport, max_count=1)
+        response = transport.sent_messages[0] if transport.sent_messages else {}
+        print(json.dumps({
+            "ok": True,
+            "mode": "dry-run",
+            "device_id": credential.device_id,
+            "relay_url": credential.relay_url,
+            "agent_token_masked": masked.get("agent_token", "***"),
+            "project_path": project_path,
+            "dry_run_result": {
+                "requests_processed": count,
+                "response": response,
+            },
+        }, ensure_ascii=False, indent=2))
+        return 0
+
+    print(json.dumps({
+        "ok": True,
+        "message": "cloud agent 已就绪。",
+        "device_id": credential.device_id,
+        "relay_url": credential.relay_url,
+        "agent_token_masked": masked.get("agent_token", "***"),
+        "project_path": project_path,
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         store = RunnerGlobalConfigStore()
@@ -2917,6 +3076,8 @@ def main() -> int:
         return _run_decision_update(sys.argv[1:])
     if cmd == "decision-delete":
         return _run_decision_delete(sys.argv[1:])
+    if cmd == "cloud":
+        return _run_cloud(sys.argv[2:])
 
     if len(sys.argv) >= 3 and sys.argv[2] in _SIMPLE_START_MODES:
         project_path = _resolve_path(sys.argv[1])

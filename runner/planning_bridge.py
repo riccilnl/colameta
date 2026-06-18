@@ -418,6 +418,7 @@ class PlanningBridge:
                 "name": spec.get("name"),
                 "allowed_files": spec.get("allowed_files", []),
                 "acceptance_commands": spec.get("acceptance_commands", []),
+                **({"allow_no_changes": spec.get("allow_no_changes")} if "allow_no_changes" in spec else {}),
             },
         }
 
@@ -1116,6 +1117,8 @@ class PlanningBridge:
         execution = spec.get("execution")
         if execution is not None:
             obj["execution"] = execution
+        if "allow_no_changes" in spec:
+            obj["allow_no_changes"] = spec["allow_no_changes"]
         return obj
 
     def _apply_insert_version_patch(self, paths: BridgePaths, plan: dict[str, Any], spec: dict[str, Any]) -> list[str]:
@@ -1191,6 +1194,7 @@ class PlanningBridge:
             "out_of_scope",
             "context_files",
             "execution",
+            "allow_no_changes",
         ):
             if field in updates:
                 target[field] = updates[field]
@@ -1261,6 +1265,8 @@ class PlanningBridge:
         self._safe_prompt_filename(spec.get("prompt_file") or f"{version}.md")
         if "execution" in spec:
             spec["execution"] = self._normalize_execution_profile(spec["execution"])
+        if "allow_no_changes" in spec and not isinstance(spec["allow_no_changes"], bool):
+            raise PlanningBridgeError("allow_no_changes 必须是布尔值。")
 
     def _validate_update_spec(
         self,
@@ -1285,6 +1291,7 @@ class PlanningBridge:
             "out_of_scope",
             "context_files",
             "execution",
+            "allow_no_changes",
         )
         updates: dict[str, Any] = {}
         for field in update_fields:
@@ -1317,6 +1324,11 @@ class PlanningBridge:
             if field == "execution":
                 updates[field] = self._normalize_execution_profile(value)
                 continue
+            if field == "allow_no_changes":
+                if not isinstance(value, bool):
+                    raise PlanningBridgeError("allow_no_changes 必须是布尔值。")
+                updates[field] = value
+                continue
             if not isinstance(value, list):
                 raise PlanningBridgeError(f"{field} 必须是字符串列表。")
             if any(not isinstance(item, str) for item in value):
@@ -1339,6 +1351,8 @@ class PlanningBridge:
             preview["acceptance_command_count"] = len(updates["acceptance_commands"])
         if "allowed_files" in updates:
             preview["allowed_files_count"] = len(updates["allowed_files"])
+        if "allow_no_changes" in updates:
+            preview["allow_no_changes"] = updates["allow_no_changes"]
         return version, updates, preview
 
     def _validate_version_order(self, versions: list[dict[str, Any]], insert_after: str, new_version: str) -> None:

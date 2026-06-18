@@ -108,6 +108,14 @@ class MCPPromptFileManager:
             raise MCPPromptFileError("INVALID_METADATA", "execution.provider 必须是 pi、codex 或 opencode。")
         return {"provider": provider}
 
+    def _normalize_optional_bool(self, params: dict[str, Any], field: str) -> bool | None:
+        if field not in params or params.get(field) is None:
+            return None
+        value = params.get(field)
+        if not isinstance(value, bool):
+            raise MCPPromptFileError("INVALID_METADATA", f"{field} 必须是布尔值。")
+        return value
+
     def _insert_from_prompt_file_params(
         self,
         prompt_filename: str,
@@ -131,6 +139,7 @@ class MCPPromptFileManager:
             "out_of_scope",
             "context_files",
             "execution",
+            "allow_no_changes",
         ):
             if field in plan_metadata and plan_metadata.get(field) is not None:
                 params[field] = plan_metadata.get(field)
@@ -149,26 +158,30 @@ class MCPPromptFileManager:
         allowed_files = self._normalize_string_list(params.get("allowed_files"), "allowed_files")
         acceptance_commands = self._normalize_acceptance_commands(params.get("acceptance_commands"))
         execution = self._normalize_execution(params.get("execution"))
-        if not allowed_files and not acceptance_commands and not execution:
+        allow_no_changes = self._normalize_optional_bool(params, "allow_no_changes")
+        if not allowed_files and not acceptance_commands and not execution and allow_no_changes is None:
             return content, {}
         body = self._strip_existing_front_matter(content).lstrip("\n")
         lines = ["---"]
+        metadata: dict[str, Any] = {}
         if allowed_files:
             lines.append("allowed_files:")
             lines.extend([f"  - {item}" for item in allowed_files])
+            metadata["allowed_files"] = allowed_files
         if acceptance_commands:
             lines.append("acceptance_commands:")
             lines.extend([f"  - {item}" for item in acceptance_commands])
+            metadata["acceptance_commands"] = acceptance_commands
+        if allow_no_changes is not None:
+            lines.append(f"allow_no_changes: {'true' if allow_no_changes else 'false'}")
+            metadata["allow_no_changes"] = allow_no_changes
         if execution:
             lines.append("execution:")
             lines.append(f"  provider: {execution['provider']}")
+            metadata["execution"] = execution
         lines.append("---")
         lines.append(body)
-        return "\n".join(lines), {
-            "allowed_files": allowed_files,
-            "acceptance_commands": acceptance_commands,
-            "execution": execution,
-        }
+        return "\n".join(lines), metadata
 
     def _preview(self, params: dict[str, Any]) -> dict[str, Any]:
         version = self._validate_version(params.get("version", ""))

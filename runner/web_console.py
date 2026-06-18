@@ -34,7 +34,6 @@ from runner.plan_loader import PlanLoader
 from runner.state_store import StateStore
 from runner.state_machine import RunnerStateMachine
 from runner.executor_run_workflow import ExecutorRunOnceService
-from runner.executor_run_reports import ExecutorRunReportStore
 from runner.mcp_git_commit import MCPGitCommitManager
 from runner.mcp_git_remote import MCPGitRemoteManager
 from runner.mcp_decisions import MCPDecisionRecordsManager
@@ -773,11 +772,16 @@ class WebConsoleServer:
 
     def _version_prompt_report_payload(self, version: str) -> dict[str, Any]:
         try:
-            report_result = ExecutorRunReportStore(self.project_root).get_report(
-                version=version,
-                latest=True,
-                include_markdown=True,
-                max_markdown_chars=50000,
+            from runner.executor_read import handle_inspect_executor_activity
+            report_result = handle_inspect_executor_activity(
+                self.project_root,
+                "get_report",
+                {
+                    "version": version,
+                    "latest": True,
+                    "include_markdown": True,
+                    "max_report_chars": 50000,
+                },
             )
         except Exception as exc:
             return {

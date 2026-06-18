@@ -351,7 +351,12 @@ class MCPPlanningBridgeServer:
                 description="Read a structured lint report for the current Runner plan before generating or updating plan patches. If blocking_issue_count > 0, do not call preview_insert_version or preview_update_version except to fix those plan issues.",
                 input_schema={
                     "type": "object",
-                    "properties": {},
+                    "properties": {
+                        "project_name": {
+                            "type": "string",
+                            "description": "可选。按已登记 managed project_name 路由读取目标项目 plan 标准报告。",
+                        },
+                    },
                     "required": [],
                     "additionalProperties": False,
                 },
@@ -740,7 +745,7 @@ class MCPPlanningBridgeServer:
             ),
             MCPToolDef(
                 name="manage_runner_plan",
-                description=f"[{self.project_hint}] Manage controlled Runner plan onboarding for source-only projects with inspect, preview, and apply actions. bootstrap_preview creates only the .colameta structure with empty versions (onboarding-only). After apply, use manage_prompt_file + manage_plan_version insert_from_prompt_file_preview to add development versions. This never writes arbitrary files and does not use paste-plan UI.",
+                description=f"[{self.project_hint}] Manage controlled Runner plan onboarding for the bound source project with inspect, preview, and apply actions. bootstrap_preview project_name is the new plan name, not a registry routing key. This never writes arbitrary files and does not use paste-plan UI.",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -751,7 +756,7 @@ class MCPPlanningBridgeServer:
                         },
                         "project_name": {
                             "type": "string",
-                            "description": "Project name for bootstrap_preview. Required for onboarding-only bootstrap.",
+                            "description": "bootstrap_preview 必填。新建 plan.json 的 project_name；仅用于命名当前绑定 source 项目，不按 registry 路由。",
                         },
                         "plan_json": {
                             "type": "string",
@@ -1221,6 +1226,10 @@ class MCPPlanningBridgeServer:
                             "items": {"type": "string"},
                             "description": "可选。版本禁止修改的文件模式列表。",
                         },
+                        "allow_no_changes": {
+                            "type": "boolean",
+                            "description": "可选。read-only/audit 版本设置为 true 后，可在验收通过且无 allowed_files diff 时通过。默认 false 仍阻断无变更。",
+                        },
                         "execution": {
                             "type": "object",
                             "description": "可选。版本执行器配置。provider 必须是 pi/codex/opencode。",
@@ -1461,6 +1470,10 @@ class MCPPlanningBridgeServer:
                             "enum": ["index", "search", "read_section", "update_section_preview", "append_section_preview", "sync_docs_preview", "apply"],
                             "description": "Docs management action。",
                         },
+                        "project_name": {
+                            "type": "string",
+                            "description": "可选。按已登记 managed project_name 路由文档索引、读取、搜索、预览和 apply。",
+                        },
                         "file": {
                             "type": "string",
                             "description": "read_section/update_section_preview/append_section_preview 使用的文件路径。只允许 README.md、AGENTS.md、docs/*.md。",
@@ -1581,6 +1594,10 @@ class MCPPlanningBridgeServer:
                                 ],
                             },
                             "description": "preview 可选。自动写入 prompt front matter 的 acceptance_commands。",
+                        },
+                        "allow_no_changes": {
+                            "type": "boolean",
+                            "description": "preview 可选。自动写入 prompt front matter；read-only/audit 版本可在验收通过且无 allowed_files diff 时通过。",
                         },
                         "execution": {
                             "type": "object",
@@ -4065,6 +4082,9 @@ class MCPPlanningBridgeServer:
         scope_error = self._oauth_scope_error(name, params, auth_context)
         if scope_error is not None:
             return scope_error
+        relay_scope_error = self._cloud_relay_scope_error(name, params, auth_context)
+        if relay_scope_error is not None:
+            return relay_scope_error
         try:
             data = tool(params)
             return {"ok": True, "tool": name, "data": data}
@@ -4077,18 +4097,18 @@ class MCPPlanningBridgeServer:
         except Exception as e:
             return self._tool_error(name, "TOOL_EXEC_ERROR", "工具执行失败。", {"message": str(e)})
 
-    def _oauth_scope_error(
+    def call_tool_for_agent(
         self,
         name: str,
-        params: dict[str, Any],
-        auth_context: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        if not isinstance(auth_context, dict) or auth_context.get("mode") != "oauth":
-            return None
-        oauth_provider = auth_context.get("oauth_provider")
-        token_payload = auth_context.get("token")
-        if not isinstance(oauth_provider, MCPOAuthProvider) or not isinstance(token_payload, dict):
-            return self._tool_error(name, "UNAUTHORIZED", "OAuth token is invalid.")
+        arguments: dict[str, Any],
+        auth_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._call_tool(name, arguments, auth_context=auth_context)
+
+    def get_required_scope_for_tool(self, name: str, arguments: dict[str, Any]) -> str:
+        return self._required_scope_for_tool(name, arguments)
+
+    def _required_scope_for_tool(self, name: str, params: dict[str, Any]) -> str:
         required_scope = "mcp:read"
         if name in {"preview_insert_version", "preview_update_version"}:
             required_scope = "mcp:preview"
@@ -4353,12 +4373,47 @@ class MCPPlanningBridgeServer:
             required_scope = "mcp:read"
         elif name in {"list_workflow_runs", "get_workflow_run"}:
             required_scope = "mcp:read"
+        return required_scope
+
+    def _oauth_scope_error(
+        self,
+        name: str,
+        params: dict[str, Any],
+        auth_context: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(auth_context, dict) or auth_context.get("mode") != "oauth":
+            return None
+        oauth_provider = auth_context.get("oauth_provider")
+        token_payload = auth_context.get("token")
+        if not isinstance(oauth_provider, MCPOAuthProvider) or not isinstance(token_payload, dict):
+            return self._tool_error(name, "UNAUTHORIZED", "OAuth token is invalid.")
+        required_scope = self._required_scope_for_tool(name, params)
         if oauth_provider.validate_scope(token_payload, required_scope):
             return None
         return self._tool_error(
             name,
             "INSUFFICIENT_SCOPE",
             "OAuth token scope is insufficient for this tool.",
+        )
+
+    def _cloud_relay_scope_error(
+        self,
+        name: str,
+        params: dict[str, Any],
+        auth_context: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(auth_context, dict) or auth_context.get("mode") != "cloud-relay":
+            return None
+        granted_scopes = auth_context.get("scopes", [])
+        if not isinstance(granted_scopes, list):
+            return self._tool_error(name, "UNAUTHORIZED", "cloud-relay scopes 无效。")
+        required_scope = self._required_scope_for_tool(name, params)
+        if required_scope in granted_scopes:
+            return None
+        return self._tool_error(
+            name,
+            "INSUFFICIENT_SCOPE",
+            f"cloud-relay scope 不足，需要 {required_scope}，当前 scopes: {granted_scopes}",
         )
 
     def _project_identity(self) -> dict[str, Any]:
@@ -4502,6 +4557,8 @@ class MCPPlanningBridgeServer:
         }
 
     def _tool_get_plan_standards_report(self, params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool("get_plan_standards_report", params, require_managed=True)
         return PlanStandardsLinter().lint_project(self.project_root)
 
     def _tool_get_runner_execution_standards(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -5084,6 +5141,8 @@ class MCPPlanningBridgeServer:
         return result
 
     def _tool_manage_project_docs(self, params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("project_name") is not None:
+            return self._route_project_name_tool("manage_project_docs", params, require_managed=True)
         action_raw = params.get("action")
         action = action_raw.strip().lower() if isinstance(action_raw, str) else ""
         if action not in {"index", "search", "read_section", "update_section_preview", "append_section_preview", "sync_docs_preview", "apply"}:
@@ -6146,6 +6205,12 @@ class MCPPlanningBridgeServer:
         if execution is not None:
             spec["execution"] = self._extract_execution_profile(execution)
 
+        if "allow_no_changes" in params and params.get("allow_no_changes") is not None:
+            allow_no_changes = params.get("allow_no_changes")
+            if not isinstance(allow_no_changes, bool):
+                raise MCPToolInputError("INVALID_ALLOW_NO_CHANGES", "allow_no_changes 必须是布尔值。")
+            spec["allow_no_changes"] = allow_no_changes
+
         return spec
 
     def _plan_versions_empty(self) -> bool:
@@ -6200,6 +6265,13 @@ class MCPPlanningBridgeServer:
         execution = params.get("execution")
         if execution is not None:
             spec["execution"] = self._extract_execution_profile(execution)
+            has_update = True
+
+        if "allow_no_changes" in params and params.get("allow_no_changes") is not None:
+            allow_no_changes = params.get("allow_no_changes")
+            if not isinstance(allow_no_changes, bool):
+                raise MCPToolInputError("INVALID_ALLOW_NO_CHANGES", "allow_no_changes 必须是布尔值。")
+            spec["allow_no_changes"] = allow_no_changes
             has_update = True
 
         if not has_update:
@@ -6587,7 +6659,7 @@ class MCPPlanningBridgeServer:
                     "message": "insert_from_prompt_file_preview 需要 acceptance_commands 参数，或 prompt 文件 front matter 提供 acceptance_commands。"}
         merged_params["acceptance_commands"] = acceptance_commands
 
-        for field in ("manual_acceptance", "out_of_scope", "context_files", "forbidden_files"):
+        for field in ("manual_acceptance", "out_of_scope", "context_files", "forbidden_files", "allow_no_changes"):
             if field in params:
                 merged_params[field] = params.get(field)
             elif field in front_matter:
